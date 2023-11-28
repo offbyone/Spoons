@@ -20,12 +20,12 @@ local logger = hs.logger.new("HammerTerm")
 obj.bind = true
 
 -- The default terminal to start
-obj.defaultTerminalAppName = "Wezterm"
+obj.defaultTerminalAppName = "iTerm2"
 
 -- The terminals to try, in order, before falling back to opening the default
 obj.terminals = {
-  {"Wezterm", "com.github.wez.wezterm"},
   {"iTerm2", "com.googlecode.iterm2"},
+  {"Wezterm", "com.github.wez.wezterm"},
   {"Terminal", "com.apple.Terminal"},
 }
 
