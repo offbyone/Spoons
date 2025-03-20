@@ -56,8 +56,23 @@ function obj:toggleTerminal()
       app:activate()
     end
   else
-    hs.alert.show(string.format("No active terminal, opening %s", obj.defaultTerminalAppName))
-    hs.application.open(obj.defaultTerminalAppName)
+    for _, terminal in ipairs(obj.terminals) do
+      local name, bundleId = table.unpack(terminal)
+      if name == obj.defaultTerminalAppName then
+        local _maybeApp = hs.application.nameForBundleID(bundleId)
+        if _maybeApp ~= nil then
+          hs.alert.show(string.format("No active terminal, opening %s", name))
+          hs.application.open(bundleId)
+
+          -- early return
+          return
+        else
+          hs.alert.show(string.format("No active terminal and the default of %s is not installed", obj.defaultTerminalAppName))
+        end
+      end
+    end
+
+    logger.ef("Didn't find %s using %s", obj.defaultTerminalAppName, defaultBundleId)
   end
 end
 
