@@ -28,15 +28,16 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Check-out the Spoons PR
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Check-out the Hammerspoon repository we need for doc building
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
-          repository: "Hammerspoon/hammerspoon"
-          path: "hammerspoon"
-
-      # Install doc-building dependencies
+          repository: Hammerspoon/hammerspoon
+          path: hammerspoon
+          persist-credentials: false
       - name: Install docs dependencies
         run: |
           cd $GITHUB_WORKSPACE/hammerspoon
