@@ -42,14 +42,23 @@ jobs:
           cd $GITHUB_WORKSPACE/hammerspoon
           /usr/bin/python3 -m pip install -r requirements.txt
 
-      # Find files modified by this PR
-      - uses: lots0logs/gh-action-get-changed-files@2.1.4
+      # Find directories with modified files
+      - uses: tj-actions/changed-files@v46.0.5
+        id: changed-files
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          files_separator: " "
+          include_all_old_new_renamed_files: true
+          dir_names: true
+          dir_names_max_depth: 3 # Enough to capture Source/Name.spoon
 
-      # Show modified files, as a debug log
-      - name: Show changed files
-        run: cat $HOME/files.json
+      # Show modified directories, as a debug log
+      - name: Show changed directories
+        env:
+          CHANGED_DIRS: ${{ steps.changed-files.outputs.all_changed_files }}
+        run: |
+          for dir in ${CHANGED_DIRS}; do
+            echo "$dir was changed"
+          done
 
       # Lint docstrings
       # - name: Docstrings Linter
@@ -61,6 +70,8 @@ jobs:
 
       # Update docs and zips
       - name: Update docs and zips
+        env:
+          CHANGED_DIRS: ${{ steps.changed-files.outputs.dir_names }}
         run: ./scripts/gh_actions_publish.sh
 
       # Push changes
