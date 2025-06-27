@@ -28,12 +28,12 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Check-out the Spoons PR
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
         with:
           persist-credentials: false
 
       # Check-out the Hammerspoon repository we need for doc building
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
         with:
           repository: Hammerspoon/hammerspoon
           path: hammerspoon
@@ -44,7 +44,7 @@ jobs:
           /usr/bin/python3 -m pip install -r requirements.txt
 
       # Find directories with modified files
-      - uses: tj-actions/changed-files@v46.0.5
+      - uses: tj-actions/changed-files@ed68ef82c095e0d48ec87eccea555d944a631a4c #v46.0.5
         id: changed-files
         with:
           files_separator: " "
@@ -77,7 +77,7 @@ jobs:
 
       # Push changes
       - name: Push changes
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@77c5b412c50b723d2a4fbc6d71fb5723bcd439aa #master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
         if: github.event_name == 'push'
