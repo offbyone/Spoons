@@ -72,7 +72,7 @@ jobs:
       # Update docs and zips
       - name: Update docs and zips
         env:
-          CHANGED_DIRS: ${{ steps.changed-files.outputs.dir_names }}
+          CHANGED_DIRS: ${{ steps.changed-files.outputs.all_changed_files }}
         run: ./scripts/gh_actions_publish.sh
 
       # Push changes
