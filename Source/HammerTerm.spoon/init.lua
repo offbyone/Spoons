@@ -31,6 +31,26 @@ obj.terminals = {
 
 function obj:bindKeys()
   hs.hotkey.bind({"cmd", "ctrl"}, "'", obj.toggleTerminal)
+  hs.hotkey.bind({"cmd", "ctrl"}, ";", obj.toggleEmacs)
+end
+
+function obj:toggleEmacs()
+  local app = nil
+  local emacsBundleId = "org.gnu.Emacs"
+  app = hs.application.get(emacsBundleId)
+
+  if app ~= nil then
+    if app:isFrontmost() then
+      hs.alert.show(string.format("Hiding %s", app:name()))
+      app:hide()
+    else
+      hs.alert.show(string.format("Foregrounding %s", app:name()))
+      app:activate()
+    end
+  else
+    hs.alert.show(string.format("No active Emacs, opening %s", emacsBundleId))
+    hs.application.open(emacsBundleId)
+  end
 end
 
 function obj:toggleTerminal()
