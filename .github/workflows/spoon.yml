@@ -28,28 +28,38 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Check-out the Spoons PR
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
+        with:
+          persist-credentials: false
 
       # Check-out the Hammerspoon repository we need for doc building
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 #v4.2.2
         with:
-          repository: "Hammerspoon/hammerspoon"
-          path: "hammerspoon"
-
-      # Install doc-building dependencies
+          repository: Hammerspoon/hammerspoon
+          path: hammerspoon
+          persist-credentials: false
       - name: Install docs dependencies
         run: |
           cd $GITHUB_WORKSPACE/hammerspoon
           /usr/bin/python3 -m pip install -r requirements.txt
 
-      # Find files modified by this PR
-      - uses: lots0logs/gh-action-get-changed-files@2.1.4
+      # Find directories with modified files
+      - uses: tj-actions/changed-files@ed68ef82c095e0d48ec87eccea555d944a631a4c #v46.0.5
+        id: changed-files
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          files_separator: " "
+          include_all_old_new_renamed_files: true
+          dir_names: true
+          dir_names_max_depth: 3 # Enough to capture Source/Name.spoon
 
-      # Show modified files, as a debug log
-      - name: Show changed files
-        run: cat $HOME/files.json
+      # Show modified directories, as a debug log
+      - name: Show changed directories
+        env:
+          CHANGED_DIRS: ${{ steps.changed-files.outputs.all_changed_files }}
+        run: |
+          for dir in ${CHANGED_DIRS}; do
+            echo "$dir was changed"
+          done
 
       # Lint docstrings
       # - name: Docstrings Linter
@@ -61,11 +71,13 @@ jobs:
 
       # Update docs and zips
       - name: Update docs and zips
+        env:
+          CHANGED_DIRS: ${{ steps.changed-files.outputs.all_changed_files }}
         run: ./scripts/gh_actions_publish.sh
 
       # Push changes
       - name: Push changes
-        uses: ad-m/github-push-action@master
+        uses: ad-m/github-push-action@77c5b412c50b723d2a4fbc6d71fb5723bcd439aa #master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
         if: github.event_name == 'push'

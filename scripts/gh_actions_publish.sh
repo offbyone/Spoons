@@ -9,9 +9,15 @@ set -x
 set -eu
 
 # Find the Spoons that have been modified
-SPOONS=$(cat "${HOME}/files.json" | jq -r -c '.[] | select(contains(".lua"))' | sed -e 's#^Source/\(.*\).spoon/.*#\1#' | sort | uniq)
+# Uses the CHANGED_DIRS environment variable set by tj-actions/changed-files
+if [ -z "${CHANGED_DIRS:-}" ]; then
+    echo "CHANGED_DIRS environment variable not set. Was tj-actions/changed-files executed with dir_names: true?"
+    exit 1
+fi
 
-if [ "${SPOONS}" == "" ]; then
+SPOONS=$(echo "$CHANGED_DIRS" | tr ' ' '\n' | grep "^Source/.*\.spoon$" | sed -e 's#^Source/\(.*\).spoon$#\1#' | sort | uniq)
+
+if [ -z "${SPOONS}" ]; then
     echo "No Spoons modified, skipping docs rebuild"
     exit 0
 fi
