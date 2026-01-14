@@ -35,8 +35,8 @@ obj.logger = hs.logger.new("CameraLights", "info")
 ---
 --- WLED device fields:
 ---   - brightness: 0-255 (default: 128)
----   - on_preset: (optional) preset ID to use when turning on
----   - off_preset: (optional) preset ID to use when turning off
+---   - camera_on_preset: (optional) preset ID to use when camera turns on
+---   - camera_off_preset: (optional) preset ID to use when camera turns off
 ---
 --- Example:
 --- ```lua
@@ -210,10 +210,10 @@ local function setWLEDDevice(device, on)
 
     local success, result = pcall(function()
         if on then
-            if device.on_preset then
+            if device.camera_on_preset then
                 payload = hs.json.encode({
                     on = true,
-                    ps = device.on_preset
+                    ps = device.camera_on_preset
                 })
             else
                 payload = hs.json.encode({
@@ -222,10 +222,10 @@ local function setWLEDDevice(device, on)
                 })
             end
         else
-            if device.off_preset then
+            if device.camera_off_preset then
                 payload = hs.json.encode({
                     on = true,
-                    ps = device.off_preset
+                    ps = device.camera_off_preset
                 })
             else
                 payload = hs.json.encode({
