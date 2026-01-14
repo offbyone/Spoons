@@ -25,9 +25,9 @@ fi
 git config --global user.email "spoonbot@offby1.net"
 git config --global user.name "Spoons GitHub Bot"
 
-while IFS= read -r SPOON ; do
-    rm -f Spoons/${SPOON}.spoon.zip
-    make
+just
+
+while IFS= read -r SPOON; do
     git add Spoons/${SPOON}.spoon.zip
     git commit -am "Add binary package for ${SPOON}."
-done <<< "${SPOONS}"
+done <<<"${SPOONS}"
