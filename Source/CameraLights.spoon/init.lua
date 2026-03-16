@@ -28,6 +28,7 @@ obj.logger = hs.logger.new("CameraLights", "info")
 --- Table of light/device configurations. Each entry must have:
 ---   - type: "elgato" or "wled"
 ---   - ip: IP address
+---   - name: (optional) display name for the device
 --- 
 --- Elgato Key Light fields:
 ---   - brightness: 0-100 (default: 50)
@@ -38,11 +39,15 @@ obj.logger = hs.logger.new("CameraLights", "info")
 ---   - camera_on_preset: (optional) preset ID to use when camera turns on
 ---   - camera_off_preset: (optional) preset ID to use when camera turns off
 ---
+--- If name is not provided for WLED devices, the device's name will be
+--- fetched from the WLED API on first use and cached. If that fails,
+--- the IP address is used as the display name.
+---
 --- Example:
 --- ```lua
 --- spoon.CameraLights.lights = {
----   { type = "elgato", ip = "192.168.1.100", brightness = 50, temperature = 4500 },
----   { type = "wled", ip = "192.168.1.151", brightness = 200 },
+---   { type = "elgato", ip = "192.168.1.100", name = "Desk Light", brightness = 50, temperature = 4500 },
+---   { type = "wled", ip = "192.168.1.151", brightness = 200 },  -- name will be discovered
 --- }
 --- ```
 obj.lights = {}
@@ -112,10 +117,60 @@ obj.CameraFilters = {
 
 local cameraWatchers = {}  -- table of camera uid -> camera object
 local anyCameraInUse = false
+local wledNameCache = {}   -- cache of ip -> discovered name from WLED API
 
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
+
+-- Fetch WLED device name from API (async, stores in cache)
+local function fetchWLEDName(ip, callback)
+    local url = string.format("http://%s/json/info", ip)
+    
+    hs.http.asyncGet(url, nil, function(code, body, respHeaders)
+        if code >= 200 and code < 300 then
+            local success, data = pcall(function()
+                return hs.json.decode(body)
+            end)
+            
+            if success and data and data.name then
+                wledNameCache[ip] = data.name
+                obj.logger.d(string.format("Discovered WLED name for %s: %s", ip, data.name))
+                if callback then callback(data.name) end
+            else
+                obj.logger.d(string.format("Could not parse name from WLED %s", ip))
+                if callback then callback(nil) end
+            end
+        else
+            obj.logger.d(string.format("Could not fetch WLED info for %s (code: %d)", ip, code))
+            if callback then callback(nil) end
+        end
+    end)
+end
+
+-- Get display name for a light/device
+-- Priority: explicit name -> cached WLED name -> IP address
+-- For WLED devices without explicit names, triggers lazy fetch if not cached
+local function getDisplayName(light)
+    -- If explicit name provided, use it
+    if light.name and light.name ~= "" then
+        return light.name
+    end
+    
+    -- For WLED devices, try cache or trigger fetch
+    if light.type == "wled" and light.ip then
+        local cached = wledNameCache[light.ip]
+        if cached then
+            return cached
+        end
+        
+        -- Trigger async fetch (will populate cache for next time)
+        fetchWLEDName(light.ip, nil)
+    end
+    
+    -- Fall back to IP
+    return light.ip or "unknown"
+end
 
 -- Convert Kelvin to mireds (Elgato API uses mireds)
 -- Valid range: 143 (7000K) to 344 (2900K)
@@ -152,6 +207,7 @@ local function setElgatoLight(light, on)
         return
     end
     
+    local displayName = getDisplayName(light)
     local url = string.format("http://%s:%d/elgato/lights", light.ip, obj.ELGATO_PORT)
     local payload
     
@@ -172,7 +228,7 @@ local function setElgatoLight(light, on)
     end)
     
     if not success then
-        obj.logger.w(string.format("Elgato Light %s: failed to encode payload - %s", light.ip, result))
+        obj.logger.w(string.format("Elgato Light %s: failed to encode payload - %s", displayName, result))
         return
     end
 
@@ -182,14 +238,14 @@ local function setElgatoLight(light, on)
         if code >= 200 and code < 300 then
             if on then
                 obj.logger.i(string.format("Elgato Light %s: ON (brightness=%d%%, temp=%dK)",
-                    light.ip, light.brightness or 50, light.temperature or 4500))
+                    displayName, light.brightness or 50, light.temperature or 4500))
             else
-                obj.logger.i(string.format("Elgato Light %s: OFF", light.ip))
+                obj.logger.i(string.format("Elgato Light %s: OFF", displayName))
             end
         elseif code == 0 then
-            obj.logger.d(string.format("Elgato Light %s: unreachable (not on network)", light.ip))
+            obj.logger.d(string.format("Elgato Light %s: unreachable (not on network)", displayName))
         else
-            obj.logger.w(string.format("Elgato Light %s: failed with code %d", light.ip, code))
+            obj.logger.w(string.format("Elgato Light %s: failed with code %d", displayName, code))
         end
     end)
 end
@@ -205,6 +261,7 @@ local function setWLEDDevice(device, on)
         return
     end
     
+    local displayName = getDisplayName(device)
     local url = string.format("http://%s/json/state", device.ip)
     local payload
 
@@ -236,7 +293,7 @@ local function setWLEDDevice(device, on)
     end)
     
     if not success then
-        obj.logger.w(string.format("WLED %s: failed to encode payload - %s", device.ip, result))
+        obj.logger.w(string.format("WLED %s: failed to encode payload - %s", displayName, result))
         return
     end
 
@@ -245,14 +302,14 @@ local function setWLEDDevice(device, on)
     hs.http.asyncPost(url, payload, headers, function(code, body, respHeaders)
         if code >= 200 and code < 300 then
             if on then
-                obj.logger.i(string.format("WLED %s: ON (brightness=%d)", device.ip, device.brightness or 128))
+                obj.logger.i(string.format("WLED %s: ON (brightness=%d)", displayName, device.brightness or 128))
             else
-                obj.logger.i(string.format("WLED %s: OFF", device.ip))
+                obj.logger.i(string.format("WLED %s: OFF", displayName))
             end
         elseif code == 0 then
-            obj.logger.d(string.format("WLED %s: unreachable (not on network)", device.ip))
+            obj.logger.d(string.format("WLED %s: unreachable (not on network)", displayName))
         else
-            obj.logger.w(string.format("WLED %s: failed with code %d", device.ip, code))
+            obj.logger.w(string.format("WLED %s: failed with code %d", displayName, code))
         end
     end)
 end
@@ -300,6 +357,15 @@ local function setAllLights(on)
         
         if not success then
             obj.logger.w(string.format("Failed to control light #%d: %s", i, tostring(err)))
+        else
+            local displayName = getDisplayName(light)
+            hs.notify.new({
+                title = "CameraLights",
+                informativeText = string.format("Set light %s to %s", displayName, state),
+                autoWithdraw = true,
+                hasActionButton = false,
+            })
+            :send()
         end
     end
 end
@@ -396,24 +462,48 @@ function obj:start()
     self.logger.i("CameraLights starting")
     self.logger.i(string.format("Configured lights/devices: %d", #self.lights))
     
+    -- Pre-fetch WLED names for devices without explicit names
+    local wledFetchCount = 0
+    local wledFetchComplete = 0
+    
     for _, light in ipairs(self.lights) do
-        if light.type == "elgato" then
-            self.logger.i(string.format("  - Elgato %s (brightness=%d%%, temp=%dK)",
-                light.ip, light.brightness or 50, light.temperature or 4500))
-        elseif light.type == "wled" then
-            self.logger.i(string.format("  - WLED %s (brightness=%d)", light.ip, light.brightness or 128))
-        else
-            self.logger.w(string.format("  - Unknown type '%s' for %s", light.type or "nil", light.ip))
+        if light.type == "wled" and light.ip and (not light.name or light.name == "") and not wledNameCache[light.ip] then
+            wledFetchCount = wledFetchCount + 1
+            fetchWLEDName(light.ip, function(name)
+                wledFetchComplete = wledFetchComplete + 1
+            end)
         end
     end
     
-    if self.allowedCameras ~= nil then
-        self.logger.i("Camera filtering: enabled")
-    else
-        self.logger.i("Camera filtering: all cameras allowed")
+    -- Helper function to log configuration after names are fetched
+    local function logConfiguration()
+        for _, light in ipairs(self.lights) do
+            local displayName = getDisplayName(light)
+            if light.type == "elgato" then
+                self.logger.i(string.format("  - Elgato %s (brightness=%d%%, temp=%dK)",
+                    displayName, light.brightness or 50, light.temperature or 4500))
+            elseif light.type == "wled" then
+                self.logger.i(string.format("  - WLED %s (brightness=%d)", displayName, light.brightness or 128))
+            else
+                self.logger.w(string.format("  - Unknown type '%s' for %s", light.type or "nil", displayName))
+            end
+        end
+        
+        if self.allowedCameras ~= nil then
+            self.logger.i("Camera filtering: enabled")
+        else
+            self.logger.i("Camera filtering: all cameras allowed")
+        end
+        
+        self.logger.i("=================================================")
     end
     
-    self.logger.i("=================================================")
+    -- If we have WLED devices to fetch, wait briefly for names, then continue
+    if wledFetchCount > 0 then
+        hs.timer.doAfter(0.5, logConfiguration)
+    else
+        logConfiguration()
+    end
 
     -- Watch for camera add/remove events
     hs.camera.setWatcherCallback(onCameraAddedOrRemoved)
@@ -505,13 +595,14 @@ function obj:status()
     
     print(string.format("Lights/devices configured: %d", #self.lights))
     for _, light in ipairs(self.lights) do
+        local displayName = getDisplayName(light)
         if light.type == "elgato" then
             print(string.format("  - Elgato %s (brightness=%d%%, temp=%dK)",
-                light.ip, light.brightness or 50, light.temperature or 4500))
+                displayName, light.brightness or 50, light.temperature or 4500))
         elseif light.type == "wled" then
-            print(string.format("  - WLED %s (brightness=%d)", light.ip, light.brightness or 128))
+            print(string.format("  - WLED %s (brightness=%d)", displayName, light.brightness or 128))
         else
-            print(string.format("  - Unknown %s", light.ip))
+            print(string.format("  - Unknown %s", displayName))
         end
     end
     

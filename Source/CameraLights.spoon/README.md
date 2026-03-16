@@ -31,8 +31,8 @@ hs.loadSpoon("SpoonInstall")
 spoon.SpoonInstall:andUse("CameraLights", {
   config = {
     lights = {
-      { type = "elgato", ip = "192.168.1.100", brightness = 50, temperature = 4500 },
-      { type = "wled", ip = "192.168.1.151", brightness = 200 },
+      { type = "elgato", ip = "192.168.1.100", name = "Left Key Light", brightness = 50, temperature = 4500 },
+      { type = "wled", ip = "192.168.1.151", brightness = 200 },  -- name will be auto-discovered
     }
   },
   start = true
@@ -45,8 +45,8 @@ spoon.SpoonInstall:andUse("CameraLights", {
 spoon.SpoonInstall:andUse("CameraLights", {
   config = {
     lights = {
-      { type = "elgato", ip = "192.168.1.100", brightness = 75, temperature = 5000 },
-      { type = "wled", ip = "192.168.1.151", brightness = 200, on_preset = 1, off_preset = 2 },
+      { type = "elgato", ip = "192.168.1.100", name = "Main Light", brightness = 75, temperature = 5000 },
+      { type = "wled", ip = "192.168.1.151", name = "Background", brightness = 200, on_preset = 1, off_preset = 2 },
     },
     -- Only respond to FaceTime cameras
     allowedCameras = spoon.CameraLights.CameraFilters.namePattern("FaceTime")
@@ -62,9 +62,9 @@ hs.loadSpoon("CameraLights")
 
 -- Configure lights
 spoon.CameraLights.lights = {
-  { type = "elgato", ip = "192.168.1.100", brightness = 50, temperature = 4500 },
-  { type = "elgato", ip = "192.168.1.101", brightness = 75, temperature = 5000 },
-  { type = "wled", ip = "192.168.1.151", brightness = 200 },
+  { type = "elgato", ip = "192.168.1.100", name = "Left", brightness = 50, temperature = 4500 },
+  { type = "elgato", ip = "192.168.1.101", name = "Right", brightness = 75, temperature = 5000 },
+  { type = "wled", ip = "192.168.1.151", brightness = 200 },  -- name will be auto-discovered
 }
 
 -- Optional: Filter cameras (only allow specific cameras to trigger lights)
@@ -76,12 +76,15 @@ spoon.CameraLights:start()
 
 ## Light Configuration
 
+All light configurations support an optional `name` attribute for display purposes in logs and notifications.
+
 ### Elgato Key Light
 
 ```lua
 {
   type = "elgato",
   ip = "192.168.1.100",        -- Required: IP address
+  name = "Desk Light",         -- Optional: Display name (default: IP address)
   brightness = 50,             -- Optional: 0-100 (default: 50)
   temperature = 4500           -- Optional: Kelvin 2900-7000 (default: 4500)
 }
@@ -93,11 +96,14 @@ spoon.CameraLights:start()
 {
   type = "wled",
   ip = "192.168.1.151",        -- Required: IP address
+  name = "Bias Light",         -- Optional: Display name (will auto-discover from WLED API if not provided)
   brightness = 200,            -- Optional: 0-255 (default: 128)
   on_preset = 1,               -- Optional: Preset ID for "on" state
   off_preset = 2               -- Optional: Preset ID for "off" state
 }
 ```
+
+**Note**: For WLED devices, if no `name` is provided, the spoon will lazily fetch the device name from the WLED API on first use and cache it. If the API call fails, the IP address will be used as the display name.
 
 ## Camera Filtering
 
@@ -209,9 +215,9 @@ spoon.SpoonInstall:andUse("CameraLights", {
   config = {
     lights = {
       -- Two Elgato Key Lights
-      { type = "elgato", ip = "192.168.1.100", brightness = 60, temperature = 4500 },
-      { type = "elgato", ip = "192.168.1.101", brightness = 80, temperature = 5000 },
-      -- Bias lighting
+      { type = "elgato", ip = "192.168.1.100", name = "Left Key Light", brightness = 60, temperature = 4500 },
+      { type = "elgato", ip = "192.168.1.101", name = "Right Key Light", brightness = 80, temperature = 5000 },
+      -- Bias lighting (will use WLED device name)
       { type = "wled", ip = "192.168.1.151", brightness = 150 },
     },
     -- Only respond to built-in FaceTime camera, not USB cameras
@@ -228,9 +234,9 @@ Since lights on unreachable networks are silently ignored, you can configure all
 ```lua
 spoon.CameraLights.lights = {
   -- Home office lights
-  { type = "elgato", ip = "192.168.1.100", brightness = 50, temperature = 4500 },
+  { type = "elgato", ip = "192.168.1.100", name = "Home Key Light", brightness = 50, temperature = 4500 },
   -- Work office lights (different network)
-  { type = "elgato", ip = "10.0.1.200", brightness = 75, temperature = 5000 },
+  { type = "elgato", ip = "10.0.1.200", name = "Work Key Light", brightness = 75, temperature = 5000 },
 }
 spoon.CameraLights:start()
 ```
