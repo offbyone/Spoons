@@ -11,7 +11,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "CameraLights"
-obj.version = "1.0"
+obj.version = "1.1"
 obj.author = "Chris Rose <offline@offby1.net>"
 obj.homepage = "https://github.com/offbyone/Spoons"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
@@ -81,6 +81,14 @@ obj.HTTP_TIMEOUT = 3
 -- Helper constants for camera filtering
 --------------------------------------------------------------------------------
 
+-- Safely get camera name, returning "unknown" if the camera object is stale or nil
+-- Defined early so CameraFilters closures can reference it.
+local function safeCameraName(camera)
+    if not camera then return "unknown" end
+    local ok, name = pcall(function() return camera:name() end)
+    return (ok and name) or "unknown"
+end
+
 --- CameraLights.CameraFilters
 --- Variable
 --- Convenience functions for camera filtering
@@ -93,7 +101,7 @@ obj.CameraFilters = {
     --- @return function Filter function
     namePattern = function(pattern)
         return function(camera)
-            return camera:name():match(pattern) ~= nil
+            return (safeCameraName(camera)):match(pattern) ~= nil
         end
     end,
     
@@ -106,7 +114,7 @@ obj.CameraFilters = {
             nameSet[name] = true
         end
         return function(camera)
-            return nameSet[camera:name()] == true
+            return nameSet[safeCameraName(camera)] == true
         end
     end,
 }
@@ -118,6 +126,8 @@ obj.CameraFilters = {
 local cameraWatchers = {}  -- table of camera uid -> camera object
 local anyCameraInUse = false
 local wledNameCache = {}   -- cache of ip -> discovered name from WLED API
+local sleepWatcher = nil   -- hs.caffeinate.watcher for sleep/wake recovery
+local healthCheckTimer = nil  -- periodic timer to catch missed camera events
 
 --------------------------------------------------------------------------------
 -- Helpers
@@ -378,8 +388,11 @@ end
 local function checkAnyCameraInUse()
     local cameras = hs.camera.allCameras()
     for _, camera in ipairs(cameras) do
-        if isCameraAllowed(camera) and camera:isInUse() then
-            return true
+        if isCameraAllowed(camera) then
+            local ok, inUse = pcall(function() return camera:isInUse() end)
+            if ok and inUse then
+                return true
+            end
         end
     end
     return false
@@ -389,7 +402,7 @@ end
 local function onCameraStateChange(camera, property, scope, element)
     -- Only respond to allowed cameras
     if not isCameraAllowed(camera) then
-        obj.logger.d(string.format("Ignoring camera (not allowed): %s", camera:name()))
+        obj.logger.d(string.format("Ignoring camera (not allowed): %s", safeCameraName(camera)))
         return
     end
     
@@ -397,11 +410,11 @@ local function onCameraStateChange(camera, property, scope, element)
     local nowInUse = checkAnyCameraInUse()
 
     if nowInUse and not wasInUse then
-        obj.logger.i(string.format("Camera activated: %s", camera:name()))
+        obj.logger.i(string.format("Camera activated: %s", safeCameraName(camera)))
         anyCameraInUse = true
         setAllLights(true)
     elseif not nowInUse and wasInUse then
-        obj.logger.i(string.format("Camera deactivated: %s", camera:name()))
+        obj.logger.i(string.format("Camera deactivated: %s", safeCameraName(camera)))
         anyCameraInUse = false
         setAllLights(false)
     end
@@ -418,7 +431,7 @@ local function watchCamera(camera)
     cameraWatchers[camera:uid()] = camera
     
     local allowed = isCameraAllowed(camera) and "allowed" or "filtered"
-    obj.logger.i(string.format("Watching camera: %s (%s)", camera:name(), allowed))
+    obj.logger.i(string.format("Watching camera: %s (%s)", safeCameraName(camera), allowed))
 end
 
 -- Stop watching a camera
@@ -426,17 +439,17 @@ local function unwatchCamera(camera)
     if cameraWatchers[camera:uid()] then
         camera:stopPropertyWatcher()
         cameraWatchers[camera:uid()] = nil
-        obj.logger.i(string.format("Stopped watching camera: %s", camera:name()))
+        obj.logger.i(string.format("Stopped watching camera: %s", safeCameraName(camera)))
     end
 end
 
 -- Handle camera added/removed events
 local function onCameraAddedOrRemoved(camera, event)
     if event == "Added" then
-        obj.logger.i(string.format("Camera connected: %s", camera:name()))
+        obj.logger.i(string.format("Camera connected: %s", safeCameraName(camera)))
         watchCamera(camera)
     elseif event == "Removed" then
-        obj.logger.i(string.format("Camera disconnected: %s", camera:name()))
+        obj.logger.i(string.format("Camera disconnected: %s", safeCameraName(camera)))
         unwatchCamera(camera)
 
         -- Check if we need to turn off lights
@@ -444,6 +457,34 @@ local function onCameraAddedOrRemoved(camera, event)
             anyCameraInUse = false
             setAllLights(false)
         end
+    end
+end
+
+-- Tear down all camera watchers and rebuild from current hardware state.
+-- Used on wake from sleep and by the periodic health check.
+local function rebuildCameraWatchers()
+    -- Stop all existing property watchers
+    for uid, camera in pairs(cameraWatchers) do
+        pcall(function() camera:stopPropertyWatcher() end)
+    end
+    cameraWatchers = {}
+
+    -- Re-enumerate and watch all current cameras
+    local cameras = hs.camera.allCameras()
+    obj.logger.i(string.format("Rebuilding camera watchers (%d cameras found)", #cameras))
+    for _, camera in ipairs(cameras) do
+        watchCamera(camera)
+    end
+
+    -- Sync light state with reality
+    local wasInUse = anyCameraInUse
+    anyCameraInUse = checkAnyCameraInUse()
+    if anyCameraInUse and not wasInUse then
+        obj.logger.i("Rebuild: camera now in use - turning lights on")
+        setAllLights(true)
+    elseif not anyCameraInUse and wasInUse then
+        obj.logger.i("Rebuild: no cameras in use - turning lights off")
+        setAllLights(false)
     end
 end
 
@@ -509,25 +550,60 @@ function obj:start()
     hs.camera.setWatcherCallback(onCameraAddedOrRemoved)
     hs.camera.startWatcher()
 
-    -- Set up watchers for all existing cameras
-    local cameras = hs.camera.allCameras()
-    if #cameras == 0 then
-        self.logger.i("No cameras detected")
-    else
-        for _, camera in ipairs(cameras) do
-            watchCamera(camera)
-        end
-    end
+    -- Set up watchers for all existing cameras and sync light state
+    rebuildCameraWatchers()
 
-    -- Check initial state
-    anyCameraInUse = checkAnyCameraInUse()
-    if anyCameraInUse then
-        self.logger.i("Camera already in use - turning lights on")
-        setAllLights(true)
-    else
-        self.logger.i("No cameras in use - lights remain off")
-        setAllLights(false)
-    end
+    -- Watch for sleep/wake to rebuild camera watchers.
+    -- After wake, camera hardware may re-enumerate with new CMIODeviceIDs,
+    -- silently invalidating existing property watchers.
+    sleepWatcher = hs.caffeinate.watcher.new(function(event)
+        if event == hs.caffeinate.watcher.systemDidWake then
+            self.logger.i("System woke from sleep - rebuilding camera watchers in 3s")
+            hs.timer.doAfter(3, function()
+                rebuildCameraWatchers()
+            end)
+        end
+    end)
+    sleepWatcher:start()
+
+    -- Periodic health check to catch any missed add/remove notifications.
+    -- Verifies the watched camera set matches reality and syncs light state.
+    healthCheckTimer = hs.timer.doEvery(60, function()
+        local currentCameras = hs.camera.allCameras()
+        local currentUIDs = {}
+        for _, camera in ipairs(currentCameras) do
+            local ok, uid = pcall(function() return camera:uid() end)
+            if ok and uid then
+                currentUIDs[uid] = camera
+            end
+        end
+
+        -- Add watchers for any cameras we're not tracking
+        for uid, camera in pairs(currentUIDs) do
+            if not cameraWatchers[uid] then
+                self.logger.i(string.format("Health check: found unwatched camera %s", safeCameraName(camera)))
+                watchCamera(camera)
+            end
+        end
+
+        -- Remove stale entries for cameras that are gone
+        for uid, _ in pairs(cameraWatchers) do
+            if not currentUIDs[uid] then
+                self.logger.i(string.format("Health check: removing stale watcher for %s", uid))
+                pcall(function() cameraWatchers[uid]:stopPropertyWatcher() end)
+                cameraWatchers[uid] = nil
+            end
+        end
+
+        -- Sync light state with reality
+        local wasInUse = anyCameraInUse
+        anyCameraInUse = checkAnyCameraInUse()
+        if anyCameraInUse ~= wasInUse then
+            self.logger.i(string.format("Health check: camera state changed to %s",
+                anyCameraInUse and "in use" or "idle"))
+            setAllLights(anyCameraInUse)
+        end
+    end)
 
     self.logger.i("CameraLights ready")
     
@@ -543,10 +619,24 @@ end
 function obj:stop()
     self.logger.i("Stopping CameraLights")
 
+    -- Stop sleep/wake watcher
+    if sleepWatcher then
+        sleepWatcher:stop()
+        sleepWatcher = nil
+    end
+
+    -- Stop health check timer
+    if healthCheckTimer then
+        healthCheckTimer:stop()
+        healthCheckTimer = nil
+    end
+
+    -- Stop camera add/remove watcher
     hs.camera.stopWatcher()
 
+    -- Stop all per-camera property watchers
     for uid, camera in pairs(cameraWatchers) do
-        camera:stopPropertyWatcher()
+        pcall(function() camera:stopPropertyWatcher() end)
     end
     cameraWatchers = {}
 
@@ -588,9 +678,10 @@ function obj:status()
     print("=== CameraLights Status ===")
     print(string.format("Cameras detected: %d", #cameras))
     for _, camera in ipairs(cameras) do
-        local inUse = camera:isInUse() and "IN USE" or "idle"
+        local okInUse, inUse = pcall(function() return camera:isInUse() end)
+        local inUseStr = (okInUse and inUse) and "IN USE" or "idle"
         local allowed = isCameraAllowed(camera) and "allowed" or "filtered"
-        print(string.format("  - %s: %s (%s)", camera:name(), inUse, allowed))
+        print(string.format("  - %s: %s (%s)", safeCameraName(camera), inUseStr, allowed))
     end
     
     print(string.format("Lights/devices configured: %d", #self.lights))
