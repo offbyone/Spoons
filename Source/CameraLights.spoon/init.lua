@@ -553,6 +553,11 @@ function obj:start()
     -- Set up watchers for all existing cameras and sync light state
     rebuildCameraWatchers()
 
+    -- Force-sync lights to current camera state on startup.
+    -- rebuildCameraWatchers only acts on transitions, but on fresh start
+    -- the lights may be stale from a previous session.
+    setAllLights(anyCameraInUse)
+
     -- Watch for sleep/wake to rebuild camera watchers.
     -- After wake, camera hardware may re-enumerate with new CMIODeviceIDs,
     -- silently invalidating existing property watchers.
