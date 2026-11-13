@@ -23,7 +23,7 @@ obj.logger = hs.logger.new("CameraLights", "info")
 -- Configuration
 --------------------------------------------------------------------------------
 
---- CameraLights.lights
+--- CameraLights.lights (deprecated, use callback)
 --- Variable
 --- Table of light/device configurations. Each entry must have:
 ---   - type: "elgato" or "wled"
@@ -51,6 +51,24 @@ obj.logger = hs.logger.new("CameraLights", "info")
 --- }
 --- ```
 obj.lights = {}
+
+--- CameraLights.callback
+--- Variable
+--- Optional callback function to be called when lights are turned on/off.
+--- The function will be called with a single argument: "on" or "off"
+---
+--- Example:
+--- ```lua
+--- spoon.CameraLights.callback = function(state)
+---   if state == "on" then
+---     spoon.HomeAssistant:setState("input_boolean.on_air", "on")
+---   else
+---     spoon.HomeAssistant:setState("input_boolean.on_air", "off")
+---   end
+--- end
+--- ```
+obj.callback = nil
+
 
 --- CameraLights.allowedCameras
 --- Variable
@@ -360,11 +378,16 @@ local function setAllLights(on)
     local state = on and "ON" or "OFF"
     obj.logger.i(string.format("Setting all lights %s", state))
 
+    if obj.callback and type(obj.callback) == "function" then
+        obj.logger.i("Invoking callback for lights " .. state)
+        pcall(function() obj.callback(state:lower()) end)
+    else
+
     for i, light in ipairs(obj.lights) do
         local success, err = pcall(function()
             setLight(light, on)
         end)
-        
+
         if not success then
             obj.logger.w(string.format("Failed to control light #%d: %s", i, tostring(err)))
         else
@@ -377,6 +400,7 @@ local function setAllLights(on)
             })
             :send()
         end
+    end
     end
 end
 
