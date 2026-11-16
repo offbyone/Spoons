@@ -1,8 +1,7 @@
 --- === CameraLights ===
 ---
---- Monitors camera usage and controls lights (Elgato Key Lights or WLED devices)
---- When any camera turns on (video calls, etc.) -> lights turn on
---- When all cameras turn off -> lights turn off
+--- Monitors camera usage and reports aggregate state changes through a callback.
+--- The callback receives "on" when any allowed camera is active and "off" when all are idle.
 ---
 --- Download: [https://github.com/offbyone/Spoons](https://github.com/offbyone/Spoons)
 
@@ -23,39 +22,10 @@ obj.logger = hs.logger.new("CameraLights", "info")
 -- Configuration
 --------------------------------------------------------------------------------
 
---- CameraLights.lights (deprecated, use callback)
---- Variable
---- Table of light/device configurations. Each entry must have:
----   - type: "elgato" or "wled"
----   - ip: IP address
----   - name: (optional) display name for the device
---- 
---- Elgato Key Light fields:
----   - brightness: 0-100 (default: 50)
----   - temperature: Kelvin 2900-7000 (default: 4500)
----
---- WLED device fields:
----   - brightness: 0-255 (default: 128)
----   - camera_on_preset: (optional) preset ID to use when camera turns on
----   - camera_off_preset: (optional) preset ID to use when camera turns off
----
---- If name is not provided for WLED devices, the device's name will be
---- fetched from the WLED API on first use and cached. If that fails,
---- the IP address is used as the display name.
----
---- Example:
---- ```lua
---- spoon.CameraLights.lights = {
----   { type = "elgato", ip = "192.168.1.100", name = "Desk Light", brightness = 50, temperature = 4500 },
----   { type = "wled", ip = "192.168.1.151", brightness = 200 },  -- name will be discovered
---- }
---- ```
-obj.lights = {}
-
 --- CameraLights.callback
 --- Variable
---- Optional callback function to be called when lights are turned on/off.
---- The function will be called with a single argument: "on" or "off"
+--- Optional callback invoked when aggregate camera usage changes.
+--- The function is called with a single argument: "on" or "off".
 ---
 --- Example:
 --- ```lua
@@ -72,7 +42,7 @@ obj.callback = nil
 
 --- CameraLights.allowedCameras
 --- Variable
---- Function or constant to filter which cameras trigger lights.
+--- Function or constant to filter which cameras affect aggregate state.
 --- - If a function: called with camera object, should return true/false
 --- - If nil/not set: all cameras are allowed (default)
 ---
@@ -84,16 +54,6 @@ obj.callback = nil
 --- end
 --- ```
 obj.allowedCameras = nil
-
---- CameraLights.ELGATO_PORT
---- Variable
---- Port number for Elgato Key Light API (default: 9123)
-obj.ELGATO_PORT = 9123
-
---- CameraLights.HTTP_TIMEOUT
---- Variable
---- HTTP request timeout in seconds (default: 3)
-obj.HTTP_TIMEOUT = 3
 
 --------------------------------------------------------------------------------
 -- Helper constants for camera filtering
@@ -143,69 +103,12 @@ obj.CameraFilters = {
 
 local cameraWatchers = {}  -- table of camera uid -> camera object
 local anyCameraInUse = false
-local wledNameCache = {}   -- cache of ip -> discovered name from WLED API
 local sleepWatcher = nil   -- hs.caffeinate.watcher for sleep/wake recovery
 local healthCheckTimer = nil  -- periodic timer to catch missed camera events
 
 --------------------------------------------------------------------------------
 -- Helpers
 --------------------------------------------------------------------------------
-
--- Fetch WLED device name from API (async, stores in cache)
-local function fetchWLEDName(ip, callback)
-    local url = string.format("http://%s/json/info", ip)
-    
-    hs.http.asyncGet(url, nil, function(code, body, respHeaders)
-        if code >= 200 and code < 300 then
-            local success, data = pcall(function()
-                return hs.json.decode(body)
-            end)
-            
-            if success and data and data.name then
-                wledNameCache[ip] = data.name
-                obj.logger.d(string.format("Discovered WLED name for %s: %s", ip, data.name))
-                if callback then callback(data.name) end
-            else
-                obj.logger.d(string.format("Could not parse name from WLED %s", ip))
-                if callback then callback(nil) end
-            end
-        else
-            obj.logger.d(string.format("Could not fetch WLED info for %s (code: %d)", ip, code))
-            if callback then callback(nil) end
-        end
-    end)
-end
-
--- Get display name for a light/device
--- Priority: explicit name -> cached WLED name -> IP address
--- For WLED devices without explicit names, triggers lazy fetch if not cached
-local function getDisplayName(light)
-    -- If explicit name provided, use it
-    if light.name and light.name ~= "" then
-        return light.name
-    end
-    
-    -- For WLED devices, try cache or trigger fetch
-    if light.type == "wled" and light.ip then
-        local cached = wledNameCache[light.ip]
-        if cached then
-            return cached
-        end
-        
-        -- Trigger async fetch (will populate cache for next time)
-        fetchWLEDName(light.ip, nil)
-    end
-    
-    -- Fall back to IP
-    return light.ip or "unknown"
-end
-
--- Convert Kelvin to mireds (Elgato API uses mireds)
--- Valid range: 143 (7000K) to 344 (2900K)
-local function kelvinToMireds(kelvin)
-    local mireds = math.floor(1000000 / kelvin)
-    return math.max(143, math.min(344, mireds))
-end
 
 -- Check if a camera is allowed based on the allowedCameras filter
 local function isCameraAllowed(camera)
@@ -224,183 +127,12 @@ local function isCameraAllowed(camera)
     return false
 end
 
---------------------------------------------------------------------------------
--- Elgato Key Light Control
---------------------------------------------------------------------------------
-
--- Set a single Elgato Key Light on or off
-local function setElgatoLight(light, on)
-    if not light.ip then
-        obj.logger.w("Elgato light missing IP address")
-        return
-    end
-    
-    local displayName = getDisplayName(light)
-    local url = string.format("http://%s:%d/elgato/lights", light.ip, obj.ELGATO_PORT)
-    local payload
-    
-    local success, result = pcall(function()
-        if on then
-            payload = hs.json.encode({
-                lights = {{
-                    on = 1,
-                    brightness = light.brightness or 50,
-                    temperature = kelvinToMireds(light.temperature or 4500)
-                }}
-            })
-        else
-            payload = hs.json.encode({
-                lights = {{ on = 0 }}
-            })
-        end
-    end)
-    
-    if not success then
-        obj.logger.w(string.format("Elgato Light %s: failed to encode payload - %s", displayName, result))
-        return
-    end
-
-    local headers = { ["Content-Type"] = "application/json" }
-
-    hs.http.asyncPut(url, payload, headers, function(code, body, respHeaders)
-        if code >= 200 and code < 300 then
-            if on then
-                obj.logger.i(string.format("Elgato Light %s: ON (brightness=%d%%, temp=%dK)",
-                    displayName, light.brightness or 50, light.temperature or 4500))
-            else
-                obj.logger.i(string.format("Elgato Light %s: OFF", displayName))
-            end
-        elseif code == 0 then
-            obj.logger.d(string.format("Elgato Light %s: unreachable (not on network)", displayName))
-        else
-            obj.logger.w(string.format("Elgato Light %s: failed with code %d", displayName, code))
-        end
-    end)
-end
-
---------------------------------------------------------------------------------
--- WLED Control
---------------------------------------------------------------------------------
-
--- Set a single WLED device on or off
-local function setWLEDDevice(device, on)
-    if not device.ip then
-        obj.logger.w("WLED device missing IP address")
-        return
-    end
-    
-    local displayName = getDisplayName(device)
-    local url = string.format("http://%s/json/state", device.ip)
-    local payload
-
-    local success, result = pcall(function()
-        if on then
-            if device.camera_on_preset then
-                payload = hs.json.encode({
-                    on = true,
-                    ps = device.camera_on_preset
-                })
-            else
-                payload = hs.json.encode({
-                    on = true,
-                    bri = device.brightness or 128
-                })
-            end
-        else
-            if device.camera_off_preset then
-                payload = hs.json.encode({
-                    on = true,
-                    ps = device.camera_off_preset
-                })
-            else
-                payload = hs.json.encode({
-                    on = false
-                })
-            end
-        end
-    end)
-    
-    if not success then
-        obj.logger.w(string.format("WLED %s: failed to encode payload - %s", displayName, result))
-        return
-    end
-
-    local headers = { ["Content-Type"] = "application/json" }
-
-    hs.http.asyncPost(url, payload, headers, function(code, body, respHeaders)
-        if code >= 200 and code < 300 then
-            if on then
-                obj.logger.i(string.format("WLED %s: ON (brightness=%d)", displayName, device.brightness or 128))
-            else
-                obj.logger.i(string.format("WLED %s: OFF", displayName))
-            end
-        elseif code == 0 then
-            obj.logger.d(string.format("WLED %s: unreachable (not on network)", displayName))
-        else
-            obj.logger.w(string.format("WLED %s: failed with code %d", displayName, code))
-        end
-    end)
-end
-
---------------------------------------------------------------------------------
--- Unified Light Control Interface
---------------------------------------------------------------------------------
-
--- Set a single light on or off (dispatches to correct controller based on type)
-local function setLight(light, on)
-    local success, err = pcall(function()
-        if not light then
-            obj.logger.w("Attempted to control nil light")
-            return
-        end
-        
-        if not light.ip then
-            obj.logger.w("Light configuration missing IP address")
-            return
-        end
-        
-        if light.type == "wled" then
-            setWLEDDevice(light, on)
-        elseif light.type == "elgato" then
-            setElgatoLight(light, on)
-        else
-            obj.logger.w(string.format("Unknown light type '%s' for device %s", light.type or "nil", light.ip))
-        end
-    end)
-    
-    if not success then
-        obj.logger.w(string.format("Error controlling light: %s", tostring(err)))
-    end
-end
-
--- Set all lights on or off
-local function setAllLights(on)
-    local state = on and "ON" or "OFF"
-    obj.logger.i(string.format("Setting all lights %s", state))
-
+-- Notify the configured callback of aggregate camera state.
+local function notifyCameraState(on)
+    local state = on and "on" or "off"
+    obj.logger.i("Invoking camera state callback: " .. state)
     if obj.callback and type(obj.callback) == "function" then
-        obj.logger.i("Invoking callback for lights " .. state)
-        pcall(function() obj.callback(state:lower()) end)
-    else
-
-    for i, light in ipairs(obj.lights) do
-        local success, err = pcall(function()
-            setLight(light, on)
-        end)
-
-        if not success then
-            obj.logger.w(string.format("Failed to control light #%d: %s", i, tostring(err)))
-        else
-            local displayName = getDisplayName(light)
-            hs.notify.new({
-                title = "CameraLights",
-                informativeText = string.format("Set light %s to %s", displayName, state),
-                autoWithdraw = true,
-                hasActionButton = false,
-            })
-            :send()
-        end
-    end
+        pcall(function() obj.callback(state) end)
     end
 end
 
@@ -436,11 +168,11 @@ local function onCameraStateChange(camera, property, scope, element)
     if nowInUse and not wasInUse then
         obj.logger.i(string.format("Camera activated: %s", safeCameraName(camera)))
         anyCameraInUse = true
-        setAllLights(true)
+        notifyCameraState(true)
     elseif not nowInUse and wasInUse then
         obj.logger.i(string.format("Camera deactivated: %s", safeCameraName(camera)))
         anyCameraInUse = false
-        setAllLights(false)
+        notifyCameraState(false)
     end
 end
 
@@ -476,10 +208,10 @@ local function onCameraAddedOrRemoved(camera, event)
         obj.logger.i(string.format("Camera disconnected: %s", safeCameraName(camera)))
         unwatchCamera(camera)
 
-        -- Check if we need to turn off lights
+        -- Check whether aggregate camera state changed.
         if anyCameraInUse and not checkAnyCameraInUse() then
             anyCameraInUse = false
-            setAllLights(false)
+            notifyCameraState(false)
         end
     end
 end
@@ -500,15 +232,15 @@ local function rebuildCameraWatchers()
         watchCamera(camera)
     end
 
-    -- Sync light state with reality
+    -- Sync aggregate camera state with reality.
     local wasInUse = anyCameraInUse
     anyCameraInUse = checkAnyCameraInUse()
     if anyCameraInUse and not wasInUse then
-        obj.logger.i("Rebuild: camera now in use - turning lights on")
-        setAllLights(true)
+        obj.logger.i("Rebuild: a camera is now in use")
+        notifyCameraState(true)
     elseif not anyCameraInUse and wasInUse then
-        obj.logger.i("Rebuild: no cameras in use - turning lights off")
-        setAllLights(false)
+        obj.logger.i("Rebuild: no cameras are in use")
+        notifyCameraState(false)
     end
 end
 
@@ -518,69 +250,28 @@ end
 
 --- CameraLights:start()
 --- Method
---- Start monitoring cameras and controlling lights
+--- Start monitoring cameras and reporting aggregate state changes
 ---
 --- Returns:
 ---  * The CameraLights object
 function obj:start()
     self.logger.i("=================================================")
     self.logger.i("CameraLights starting")
-    self.logger.i(string.format("Configured lights/devices: %d", #self.lights))
-    
-    -- Pre-fetch WLED names for devices without explicit names
-    local wledFetchCount = 0
-    local wledFetchComplete = 0
-    
-    for _, light in ipairs(self.lights) do
-        if light.type == "wled" and light.ip and (not light.name or light.name == "") and not wledNameCache[light.ip] then
-            wledFetchCount = wledFetchCount + 1
-            fetchWLEDName(light.ip, function(name)
-                wledFetchComplete = wledFetchComplete + 1
-            end)
-        end
-    end
-    
-    -- Helper function to log configuration after names are fetched
-    local function logConfiguration()
-        for _, light in ipairs(self.lights) do
-            local displayName = getDisplayName(light)
-            if light.type == "elgato" then
-                self.logger.i(string.format("  - Elgato %s (brightness=%d%%, temp=%dK)",
-                    displayName, light.brightness or 50, light.temperature or 4500))
-            elseif light.type == "wled" then
-                self.logger.i(string.format("  - WLED %s (brightness=%d)", displayName, light.brightness or 128))
-            else
-                self.logger.w(string.format("  - Unknown type '%s' for %s", light.type or "nil", displayName))
-            end
-        end
-        
-        if self.allowedCameras ~= nil then
-            self.logger.i("Camera filtering: enabled")
-        else
-            self.logger.i("Camera filtering: all cameras allowed")
-        end
-        
-        self.logger.i("=================================================")
-    end
-    
-    -- If we have WLED devices to fetch, wait briefly for names, then continue
-    if wledFetchCount > 0 then
-        hs.timer.doAfter(0.5, logConfiguration)
+    if self.allowedCameras ~= nil then
+        self.logger.i("Camera filtering: enabled")
     else
-        logConfiguration()
+        self.logger.i("Camera filtering: all cameras allowed")
     end
+    self.logger.i("=================================================")
 
     -- Watch for camera add/remove events
     hs.camera.setWatcherCallback(onCameraAddedOrRemoved)
     hs.camera.startWatcher()
 
-    -- Set up watchers for all existing cameras and sync light state
+    -- Establish current state before rebuilding so startup emits exactly once.
+    anyCameraInUse = checkAnyCameraInUse()
     rebuildCameraWatchers()
-
-    -- Force-sync lights to current camera state on startup.
-    -- rebuildCameraWatchers only acts on transitions, but on fresh start
-    -- the lights may be stale from a previous session.
-    setAllLights(anyCameraInUse)
+    notifyCameraState(anyCameraInUse)
 
     -- Watch for sleep/wake to rebuild camera watchers.
     -- After wake, camera hardware may re-enumerate with new CMIODeviceIDs,
@@ -596,7 +287,7 @@ function obj:start()
     sleepWatcher:start()
 
     -- Periodic health check to catch any missed add/remove notifications.
-    -- Verifies the watched camera set matches reality and syncs light state.
+    -- Verifies the watched camera set matches reality and syncs aggregate state.
     healthCheckTimer = hs.timer.doEvery(60, function()
         local currentCameras = hs.camera.allCameras()
         local currentUIDs = {}
@@ -624,13 +315,13 @@ function obj:start()
             end
         end
 
-        -- Sync light state with reality
+        -- Sync aggregate state with reality.
         local wasInUse = anyCameraInUse
         anyCameraInUse = checkAnyCameraInUse()
         if anyCameraInUse ~= wasInUse then
             self.logger.i(string.format("Health check: camera state changed to %s",
                 anyCameraInUse and "in use" or "idle"))
-            setAllLights(anyCameraInUse)
+            notifyCameraState(anyCameraInUse)
         end
     end)
 
@@ -674,28 +365,6 @@ function obj:stop()
     return self
 end
 
---- CameraLights:lightsOn()
---- Method
---- Manually turn all lights on (bypasses camera state)
----
---- Returns:
----  * The CameraLights object
-function obj:lightsOn()
-    setAllLights(true)
-    return self
-end
-
---- CameraLights:lightsOff()
---- Method
---- Manually turn all lights off (bypasses camera state)
----
---- Returns:
----  * The CameraLights object
-function obj:lightsOff()
-    setAllLights(false)
-    return self
-end
-
 --- CameraLights:status()
 --- Method
 --- Print current status to console
@@ -712,20 +381,7 @@ function obj:status()
         local allowed = isCameraAllowed(camera) and "allowed" or "filtered"
         print(string.format("  - %s: %s (%s)", safeCameraName(camera), inUseStr, allowed))
     end
-    
-    print(string.format("Lights/devices configured: %d", #self.lights))
-    for _, light in ipairs(self.lights) do
-        local displayName = getDisplayName(light)
-        if light.type == "elgato" then
-            print(string.format("  - Elgato %s (brightness=%d%%, temp=%dK)",
-                displayName, light.brightness or 50, light.temperature or 4500))
-        elseif light.type == "wled" then
-            print(string.format("  - WLED %s (brightness=%d)", displayName, light.brightness or 128))
-        else
-            print(string.format("  - Unknown %s", displayName))
-        end
-    end
-    
+
     print(string.format("Any camera in use: %s", anyCameraInUse and "yes" or "no"))
     print(string.format("Camera filtering: %s", self.allowedCameras and "enabled" or "all allowed"))
     

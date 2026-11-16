@@ -9,6 +9,9 @@
     "name": "CameraLights"
   },
   {
+    "name": "LightManager"
+  },
+  {
     "name": "EmacsAnywhere"
   }
 ]
